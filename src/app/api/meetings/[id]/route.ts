@@ -10,6 +10,11 @@ async function getAccessibleMeeting(id: string, userId: string) {
     include: {
       participants: true,
       invitations: { where: { inviteeId: userId } },
+      // The room page renders `meeting.host.displayName`, and MeetingInfo
+      // declares `host` as required. Without this the page crashed with
+      // "Cannot read properties of undefined (reading 'displayName')" —
+      // i.e. EVERY meeting room was unusable.
+      host: { select: { id: true, displayName: true, avatarUrl: true } },
     },
   });
   if (!meeting) throw notFound('Meeting not found');

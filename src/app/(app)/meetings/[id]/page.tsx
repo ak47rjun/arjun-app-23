@@ -21,7 +21,7 @@ interface MeetingInfo {
   roomName: string;
   externalUrl: string | null;
   hostId: string;
-  host: { id: string; displayName: string | null };
+  host?: { id: string; displayName: string | null } | null;
 }
 
 export default function MeetingRoomPage() {
@@ -161,7 +161,7 @@ export default function MeetingRoomPage() {
     <div className="space-y-4">
       <PageHeader
         title={meeting.title}
-        description={`${meeting.description ?? 'ARJUN Meet room'} · host: ${meeting.host.displayName ?? '—'}`}
+        description={`${meeting.description ?? 'ARJUN Meet room'} · host: ${meeting.host?.displayName ?? '—'}`}
         actions={
           <div className="flex items-center gap-2">
             <Badge variant={meeting.status === 'LIVE' ? 'success' : 'neutral'}>{meeting.status}</Badge>
