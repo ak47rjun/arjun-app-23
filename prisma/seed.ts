@@ -1,4 +1,9 @@
 /* ARJUN seed: instruments + development admin. Run: npm run db:seed */
+// Load .env first: the Prisma CLI does this itself, but `tsx` does not, so
+// without this line `npm run db:seed` fails on a fresh checkout with
+// "Environment variable not found: DATABASE_URL". dotenv never overrides
+// variables that are already set, so real deployment env vars still win.
+import 'dotenv/config';
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';

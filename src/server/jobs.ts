@@ -114,6 +114,19 @@ async function sendMeetingReminders(): Promise<void> {
   });
   for (const meeting of meetings) {
     for (const p of meeting.participants) {
+      // This runs every 60s, so without a dedupe check each participant would
+      // get a fresh notification every minute for the entire 15-minute window.
+      // A participant is notified once per meeting until that notification is
+      // consumed: we look for an existing MEETING_INVITE carrying this meetingId.
+      const alreadyNotified = await prisma.notification.findFirst({
+        where: {
+          userId: p.userId,
+          type: 'MEETING_INVITE',
+          data: { path: ['meetingId'], equals: meeting.id },
+        },
+        select: { id: true },
+      });
+      if (alreadyNotified) continue;
       await createNotification({
         userId: p.userId,
         type: 'MEETING_INVITE',
