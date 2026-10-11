@@ -39,12 +39,15 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://s3.tradingview.com https://*.tradingview.com",
+              // tradingview-widget.com (no dot before 'tradingview') is the host the chart
+              // embed's iframe and bundles are actually served from; it is NOT matched
+              // by the *.tradingview.com patterns and was being blocked.
+              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://s3.tradingview.com https://*.tradingview.com https://*.tradingview-widget.com",
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' ws: wss: https://*.tradingview.com https://*.livekit.cloud",
-              "frame-src 'self' https://*.tradingview.com https://meet.google.com",
+              "connect-src 'self' ws: wss: https://*.tradingview.com https://*.tradingview-widget.com https://*.livekit.cloud",
+              "frame-src 'self' https://*.tradingview.com https://*.tradingview-widget.com https://meet.google.com",
               "media-src 'self' blob:",
               "object-src 'none'",
               "base-uri 'self'",

@@ -95,7 +95,7 @@ export default async function SharedChartPage({ params }: { params: { token: str
         <div className="grid gap-4 lg:grid-cols-[1fr_340px]">
           <div className="overflow-hidden rounded-2xl border border-arjun-line bg-[#04120c]">
             <div className="h-[560px]">
-              <TradingViewWidget symbol={toTvSymbol(share.symbol, instrument?.type ?? undefined)} interval={share.timeframe} containerId="shared-tv-chart" />
+              <TradingViewWidget symbol={toTvSymbol(share.symbol, instrument?.type ?? undefined)} interval={share.timeframe} />
             </div>
             <div className="border-t border-arjun-line p-2 text-center text-[11px] text-arjun-muted">
               Chart: TradingView widget (free-tier data may be delayed) · times UTC
