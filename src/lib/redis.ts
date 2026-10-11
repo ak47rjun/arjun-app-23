@@ -100,6 +100,16 @@ export async function redisSMembers(key: string): Promise<string[]> {
   }
 }
 
+export async function redisExpire(key: string, ttlSec: number): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  try {
+    await r.expire(key, ttlSec);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 export async function redisPing(): Promise<boolean> {
   const r = getRedis();
   if (!r) return false;

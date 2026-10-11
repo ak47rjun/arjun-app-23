@@ -146,6 +146,39 @@ describe('computeStats', () => {
     equities.forEach((eq, i) => expect(eq).toBeCloseTo([1000, 500, 0, 1000][i], 6));
   });
 
+  it('measures drawdown % against the peak at the time, not the final peak', () => {
+    // entry 1.1, contract 100_000 → a 0.0010 price move is $100.
+    // equity: +100 → +10 (drawdown 90, i.e. 90% of the peak of 100) → +1000 (new high)
+    const s = computeStats([
+      trade({ id: '1', exitPrice: 1.101, exitTime: exit(1) }),   // +100  → equity  100
+      trade({ id: '2', exitPrice: 1.0991, exitTime: exit(2) }),  // -90   → equity   10
+      trade({ id: '3', exitPrice: 1.1099, exitTime: exit(3) }),  // +990  → equity 1000
+    ]);
+    expect(s.maxDrawdown).toBeCloseTo(90, 6);
+    // Dividing by the FINAL peak (1000) reported 9%, badly understating the hole.
+    expect(s.maxDrawdownPercent).toBeCloseTo(90, 6);
+  });
+
+  it('reports a drawdown for an account that never traded above the starting line', () => {
+    // equity: -100 → -150. Peak never rises above 0, so the old code divided by
+    // a zero peak and reported 0% — i.e. "no drawdown" for a losing account.
+    const s = computeStats([
+      trade({ id: '1', exitPrice: 1.099, exitTime: exit(1) }),   // -100 → equity -100
+      trade({ id: '2', exitPrice: 1.0995, exitTime: exit(2) }),  // -50  → equity -150
+    ]);
+    expect(s.maxDrawdown).toBeCloseTo(150, 6);
+    expect(s.maxDrawdownPercent).toBe(100);
+  });
+
+  it('reports no drawdown when equity never falls', () => {
+    const s = computeStats([
+      trade({ id: '1', exitPrice: 1.101, exitTime: exit(1) }),   // +100
+      trade({ id: '2', exitPrice: 1.102, exitTime: exit(2) }),   // +100
+    ]);
+    expect(s.maxDrawdown).toBe(0);
+    expect(s.maxDrawdownPercent).toBe(0);
+  });
+
   it('computes streaks', () => {
     const trades = [
       trade({ id: '1', exitPrice: 1.11, exitTime: exit(1) }),

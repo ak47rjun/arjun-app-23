@@ -8,13 +8,15 @@ import { Server, type Socket } from 'socket.io';
 import { getCookie, SESSION_COOKIE } from '../lib/auth/cookies';
 import { verifySessionToken } from '../lib/auth/jwt';
 import { prisma } from '../lib/prisma';
-import { redisSAdd, redisSRem, redisSMembers, redisSet, redisGet } from '../lib/redis';
+import { redisSAdd, redisSRem, redisSMembers, redisSet, redisExpire } from '../lib/redis';
 import { isTrustedOrigin } from '../lib/security/origins';
 import * as messenger from '../lib/messenger/service';
 import { createNotifications } from '../lib/notifications/service';
 import { env } from '../lib/env';
 
 const PRESENCE_KEY = 'arjun:presence';
+// Refreshed on every connect; lapses if no process is alive to renew it.
+const PRESENCE_KEY_TTL_SEC = 300;
 
 // NOTE: the custom server (server.ts, via tsx) and the Next.js route handlers
 // (compiled .next chunks) load SEPARATE module instances of this file in the
@@ -90,9 +92,21 @@ export function attachRealtime(server: HttpServer): Server {
       });
       for (const m of memberships) socket.join(`conversation:${m.conversationId}`);
       await redisSAdd(PRESENCE_KEY, uid);
+      // Safety net: presence is a plain Redis set with no per-member TTL. If the
+      // process is killed (deploy, crash) the disconnect handler never runs and
+      // every user would be stranded "online" forever. Refreshing an expiry on
+      // the whole key lets it lapse once nothing is alive to renew it.
+      await redisExpire(PRESENCE_KEY, PRESENCE_KEY_TTL_SEC);
       await redisSet(`presence:seen:${uid}`, String(Date.now()), 120);
     };
     void joinRooms();
+
+    // Keep `presence:seen` an actual last-seen value rather than "connected at".
+    // Without this the timestamp was written once at connect and went stale for
+    // the whole session.
+    const heartbeat = setInterval(() => {
+      void redisSet(`presence:seen:${authed.data.user.id}`, String(Date.now()), 120);
+    }, 60_000);
 
     // broadcast presence to conversation peers
     const broadcastPresence = async (online: boolean) => {
@@ -202,14 +216,22 @@ export function attachRealtime(server: HttpServer): Server {
     });
 
     socket.on('disconnect', () => {
+      clearInterval(heartbeat);
       void (async () => {
         const uid = authed.data.user.id;
-        const lastSeen = await redisGet(`presence:seen:${uid}`);
-        // only mark offline if no other connection refreshed presence recently
-        if (lastSeen && Date.now() - Number(lastSeen) > 30000) {
-          await redisSRem(PRESENCE_KEY, uid);
-          void broadcastPresence(false);
-        }
+        // Go offline only when the user's LAST socket is gone.
+        //
+        // The old check compared `presence:seen` (written once at connect) with
+        // "now" and required a 30s gap. A user who connected and disconnected
+        // within 30s never satisfied it, so they were never removed from the
+        // presence set — and since that set had no expiry either, they showed
+        // as online indefinitely. Ask Socket.IO whether any socket remains
+        // instead: on disconnect this socket has already left its rooms, so an
+        // empty result means the user really is gone.
+        const remaining = await (getIO()?.in(`user:${uid}`).fetchSockets() ?? Promise.resolve([]));
+        if (remaining.length > 0) return;
+        await redisSRem(PRESENCE_KEY, uid);
+        void broadcastPresence(false);
       })();
     });
   });
