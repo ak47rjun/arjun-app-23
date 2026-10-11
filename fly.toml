@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────────────────────
+# Fly.io — ARJUN full custom server (Next + Socket.IO + jobs)
+# Deploy:  fly deploy          (needs FLY_API_TOKEN / fly auth login)
+# Region:  bom = Mumbai (closest to the primary audience)
+# ─────────────────────────────────────────────────────────────
+app = "arjun"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # keep the machine running — the realtime server must not idle-stop
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/healthz"
+
+[env]
+  NODE_ENV = "production"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

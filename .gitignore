@@ -1,0 +1,16 @@
+node_modules
+.next
+uploads/*
+!.uploadskeep
+*.tsbuildinfo
+.env
+.env.local
+.env.production
+.env*.local
+.DS_Store
+.railway/
+.vercel
+.arena
+coverage
+*.log
+.turbo

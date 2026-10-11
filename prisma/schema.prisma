@@ -1,0 +1,935 @@
+// ARJUN — The Real Trader's Hub
+// PostgreSQL schema: users, auth, trading, journal, messenger, community, meetings.
+// All timestamps are stored in UTC. Money and prices use DECIMAL(24,8).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Direct (non-pooled) connection for migrations. Required when using Supabase:
+  // point DATABASE_URL at the pgBouncer pooler (port 6543) and DIRECT_URL at the
+  // direct connection (port 5432). With a plain PostgreSQL host, both can be the same.
+  directUrl = env("DIRECT_URL")
+}
+
+// ───────────────────────────── Roles & identity ─────────────────────────────
+
+enum Role {
+  GUEST
+  MEMBER
+  VERIFIED_TRADER
+  MODERATOR
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String?
+  name          String?
+  displayName   String?
+  avatarUrl     String?
+  bio           String?
+  timezone      String    @default("UTC")
+  role          Role      @default(MEMBER)
+  isBanned      Boolean   @default(false)
+  totpSecret    String? // encrypted at rest
+  totpEnabled   Boolean   @default(false)
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  identities        Identity[]
+  sessions          Session[]
+  profile           Profile?
+  settings          UserSettings?
+  accounts          TradingAccount[]
+  mt5               Mt5Connection[]
+  watchlists        Watchlist[]
+  trades            Trade[]
+  strategies        Strategy[]
+  tags              Tag[]
+  chartLayouts      ChartLayout[]
+  chartSnapshots    ChartSnapshot[]
+  chartShares       ChartShare[]         @relation("OwnedShares")
+  chartNotes        ChartNote[]
+  conversations     ConversationMember[]
+  messages          Message[]            @relation("MessageSender")
+  messageReactions  MessageReaction[]
+  bookmarks         MessageBookmark[]
+  posts             Post[]
+  comments          Comment[]
+  reactions         Reaction[]
+  following         Follow[]             @relation("UserFollowing")
+  followers         Follow[]             @relation("UserFollowers")
+  groupsOwned       Group[]              @relation("GroupOwner")
+  groupMemberships  GroupMember[]
+  meetingsHosted    Meeting[]            @relation("MeetingHost")
+  meetingParts      MeetingParticipant[]
+  meetingInvites    MeetingInvitation[] @relation("MeetingInviter")
+  meetingInvited    MeetingInvitation[] @relation("MeetingInvitee")
+  notifications     Notification[]
+  notificationPrefs NotificationPrefs?
+  reportsFiled      Report[]             @relation("ReportReporter")
+  reportsResolved   Report[]             @relation("ReportResolver")
+  moderationActions ModerationAction[]
+  auditLogs         AuditLog[]
+  verificationTokens VerificationToken[]
+  syncJobs          SyncJob[]
+  blocking          Block[]              @relation("UserBlocking")
+  blockedBy         Block[]              @relation("UserBlockedBy")
+  attachments       Attachment[]
+
+  @@index([role])
+  @@index([createdAt])
+}
+
+model Identity {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider          String // e.g. "google"
+  providerAccountId String
+  email             String?
+  name              String?
+  avatarUrl         String?
+  accessTokenEnc    String? // encrypted at rest
+  refreshTokenEnc   String? // encrypted at rest
+  createdAt         DateTime @default(now())
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique // sha256 of the JWT id (jti)
+  userAgent String?
+  ip        String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model VerificationToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique // sha256 of the raw token
+  type       String // EMAIL_VERIFY | PASSWORD_RESET | TWO_FA_SETUP
+  identifier String // email (for email flows)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Profile {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  experienceYears  Int?
+  preferredMarkets String[]
+  markets          String[]
+  socialLinks      Json?
+  isPublic         Boolean  @default(true)
+  showStats        Boolean  @default(false)
+  verifiedBadge    Boolean  @default(false)
+  verificationNote String?
+  country          String?
+  onboardingDone   Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model UserSettings {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  theme          String   @default("emerald-dark")
+  density        String   @default("comfortable")
+  timezone       String   @default("UTC")
+  privacy        Json     @default("{}")
+  consent        Json     @default("{}")
+  dashboardLayout Json?   // saved widget arrangement
+  updatedAt      DateTime @updatedAt
+}
+
+// ───────────────────────────── Market & trading accounts ─────────────────────────────
+
+model Instrument {
+  id           String  @id @default(cuid())
+  symbol       String  @unique
+  name         String
+  type         String // forex | index | stock | commodity | crypto
+  exchange     String?
+  baseCurrency String?
+  quoteCurrency String?
+  currency     String  @default("USD")
+  contractSize Decimal @default(1) @db.Decimal(24, 8)
+  digits       Int     @default(2)
+  tickSize     Decimal @default(0.01) @db.Decimal(24, 8)
+  isActive     Boolean @default(true)
+
+  watchlistItems WatchlistItem[]
+  trades         Trade[]
+  chartLayouts   ChartLayout[]
+  chartShares    ChartShare[]
+}
+
+enum AccountStatus {
+  ACTIVE
+  DISCONNECTED
+  ERROR
+}
+
+model TradingAccount {
+  id         String        @id @default(cuid())
+  userId     String
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  broker     String
+  type       String        @default("MT5")
+  currency   String        @default("USD")
+  leverage   Int?
+  balance    Decimal       @default(0) @db.Decimal(24, 8)
+  equity     Decimal       @default(0) @db.Decimal(24, 8)
+  margin     Decimal       @default(0) @db.Decimal(24, 8)
+  freeMargin Decimal       @default(0) @db.Decimal(24, 8)
+  status     AccountStatus @default(ACTIVE)
+  lastSyncAt DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  mt5Connection Mt5Connection?
+  trades        Trade[]
+
+  @@index([userId])
+}
+
+model Mt5Connection {
+  id                 String         @id @default(cuid())
+  userId             String
+  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId          String?        @unique
+  account            TradingAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  login              String // MT5 account number
+  server             String // e.g. "Broker-Demo"
+  investorPasswordEnc String? // AES-256-GCM encrypted investor (read-only) password — BRIDGE mode only; never stored in EA mode
+  mode               String         @default("BRIDGE") // "BRIDGE" (server-side sync via MT5_BRIDGE_URL) | "EA" (Expert Advisor pushes from the terminal)
+  syncTokenHash      String? // SHA-256 of the EA sync token (EA mode) — the token itself is shown to the user exactly once
+  status             AccountStatus  @default(ACTIVE)
+  lastSyncAt         DateTime?
+  lastError          String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  syncJobs SyncJob[]
+
+  @@index([userId])
+  @@index([syncTokenHash])
+}
+
+enum SyncJobType {
+  MT5_SYNC
+  MT5_HISTORY
+  SCHEDULED_REPORT
+}
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model SyncJob {
+  id           String        @id @default(cuid())
+  userId       String
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectionId String?
+  connection   Mt5Connection? @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  type         SyncJobType
+  status       SyncJobStatus @default(PENDING)
+  attempts     Int           @default(0)
+  maxAttempts  Int           @default(5)
+  lastError    String?
+  payload      Json?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime      @default(now())
+
+  @@index([status, createdAt])
+  @@index([userId])
+}
+
+// ───────────────────────────── Watchlists ─────────────────────────────
+
+model Watchlist {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  isDefault Boolean @default(false)
+
+  items WatchlistItem[]
+
+  @@index([userId])
+}
+
+model WatchlistItem {
+  id            String      @id @default(cuid())
+  watchlistId   String
+  watchlist     Watchlist   @relation(fields: [watchlistId], references: [id], onDelete: Cascade)
+  instrumentId  String
+  instrument    Instrument  @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  sortOrder     Int         @default(0)
+  alertEnabled  Boolean     @default(false)
+  alertAbove    Decimal?    @db.Decimal(24, 8)
+  alertBelow    Decimal?    @db.Decimal(24, 8)
+  lastAlertAt   DateTime?
+  createdAt     DateTime    @default(now())
+
+  @@unique([watchlistId, instrumentId])
+  @@index([watchlistId])
+}
+
+// ───────────────────────────── Trading journal ─────────────────────────────
+
+enum TradeDirection {
+  LONG
+  SHORT
+}
+
+enum TradeStatus {
+  OPEN
+  CLOSED
+}
+
+enum TradeSource {
+  MANUAL
+  MT5_IMPORT
+}
+
+model Strategy {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  trades Trade[]
+
+  @@index([userId])
+}
+
+model Tag {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+  color  String @default("#34d399")
+
+  trades Trade[]
+
+  @@unique([userId, name])
+  @@index([userId])
+}
+
+model Trade {
+  id           String         @id @default(cuid())
+  userId       String
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId    String?
+  account      TradingAccount? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  instrumentId String?
+  instrument   Instrument?    @relation(fields: [instrumentId], references: [id], onDelete: SetNull)
+  symbol       String // denormalized so journal survives instrument edits
+  direction    TradeDirection
+  status       TradeStatus    @default(OPEN)
+  source       TradeSource    @default(MANUAL)
+
+  entryPrice Decimal   @db.Decimal(24, 8)
+  exitPrice  Decimal?  @db.Decimal(24, 8)
+  stopLoss   Decimal?  @db.Decimal(24, 8)
+  takeProfit Decimal?  @db.Decimal(24, 8)
+  quantity   Decimal   @db.Decimal(24, 8)
+
+  // planned vs actual
+  plannedEntry Decimal? @db.Decimal(24, 8)
+  plannedStop  Decimal? @db.Decimal(24, 8)
+  plannedTarget Decimal? @db.Decimal(24, 8)
+
+  entryTime DateTime
+  exitTime  DateTime?
+
+  fees       Decimal @default(0) @db.Decimal(24, 8)
+  commission Decimal @default(0) @db.Decimal(24, 8)
+  swap       Decimal @default(0) @db.Decimal(24, 8)
+  grossPnl   Decimal? @db.Decimal(24, 8)
+  netPnl     Decimal? @db.Decimal(24, 8)
+
+  riskAmount   Decimal? @db.Decimal(24, 8)
+  riskPercent  Decimal? @db.Decimal(9, 4)
+  rewardToRisk Decimal? @db.Decimal(12, 4)
+
+  setup            String?
+  strategyId       String?
+  strategy         Strategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  timeframe        String?
+  marketConditions String?
+  thesis           String?
+  notes            String?
+  lessons          String?
+  emotion          String?
+  disciplineRating Int?
+  rulesFollowed    Boolean?
+
+  // dedupe for automated imports
+  externalId String? // e.g. MT5 deal/ticket id
+  connectionRef String? // "<connectionId|userId>:<source>" — with externalId forms the dedupe key
+  importBatch String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags        Tag[]
+  screenshots TradeScreenshot[]
+
+  @@unique([connectionRef, externalId])
+  @@index([userId, status])
+  @@index([userId, exitTime])
+  @@index([userId, strategyId])
+  @@index([symbol])
+}
+
+// Prisma cannot express "unique on (source, externalId)" with NULLs portably,
+// so dedupe uses a dedicated unique column pair:
+// connectionRef is set to "<connectionId or userId>:<source>" on import.
+// (see lib/journal/dedupe.ts)
+
+model TradeScreenshot {
+  id        String   @id @default(cuid())
+  tradeId   String
+  trade     Trade    @relation(fields: [tradeId], references: [id], onDelete: Cascade)
+  url       String
+  kind      String   @default("AFTER") // BEFORE | AFTER
+  caption   String?
+  createdAt DateTime @default(now())
+
+  @@index([tradeId])
+}
+
+// ───────────────────────────── Charts ─────────────────────────────
+
+model ChartLayout {
+  id         String     @id @default(cuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrumentId String?
+  instrument Instrument? @relation(fields: [instrumentId], references: [id], onDelete: SetNull)
+  name       String
+  symbol     String
+  timeframe  String     @default("60")
+  config     Json // drawings, indicators, chart type — user's private layout
+  isDefault  Boolean    @default(false)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([userId])
+}
+
+model ChartSnapshot {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  symbol     String
+  timeframe  String
+  imageUrl   String?
+  note       String?
+  drawings   Json?
+  createdAt  DateTime @default(now())
+
+  shares ChartShare[]
+}
+
+enum ShareVisibility {
+  PRIVATE // link-token only
+  GROUP // members of a specific group
+  PUBLIC // anyone with the link
+}
+
+model ChartShare {
+  id           String         @id @default(cuid())
+  ownerId      String
+  owner        User           @relation("OwnedShares", fields: [ownerId], references: [id], onDelete: Cascade)
+  snapshotId   String?
+  snapshot     ChartSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
+  instrumentId String?
+  instrument   Instrument?    @relation(fields: [instrumentId], references: [id], onDelete: SetNull)
+  groupId      String?
+  group        Group?         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  title        String
+  symbol       String
+  timeframe    String         @default("60")
+  bias         String? // BULLISH | BEARISH | NEUTRAL
+  analysis     String?
+  entry        Decimal?       @db.Decimal(24, 8)
+  stopLoss     Decimal?       @db.Decimal(24, 8)
+  takeProfit   Decimal?       @db.Decimal(24, 8)
+  visibility   ShareVisibility @default(PRIVATE)
+  linkToken    String         @unique @default(cuid())
+  viewCount    Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  notes    ChartNote[]
+  messages Message[]
+
+  @@index([ownerId])
+  @@index([groupId])
+  @@index([visibility])
+}
+
+// A recipient's own analysis on a shared chart — never mutates the original.
+model ChartNote {
+  id        String     @id @default(cuid())
+  shareId   String
+  share     ChartShare @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content   String
+  drawings  Json?
+  createdAt DateTime   @default(now())
+
+  @@index([shareId])
+  @@index([userId])
+}
+
+// ───────────────────────────── Messenger ─────────────────────────────
+
+enum ConversationType {
+  DM
+  GROUP
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model Conversation {
+  id        String           @id @default(cuid())
+  type      ConversationType
+  name      String?
+  avatarUrl String?
+  groupId   String?          @unique
+  group     Group?           @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdById String
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  members  ConversationMember[]
+  messages Message[]
+
+  @@index([updatedAt])
+}
+
+model ConversationMember {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           MemberRole   @default(MEMBER)
+  nickname       String?
+  joinedAt       DateTime     @default(now())
+  mutedUntil     DateTime?
+  lastReadAt     DateTime?
+  pinned         Boolean      @default(false)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+}
+
+enum MessageType {
+  TEXT
+  ATTACHMENT
+  CHART_SHARE
+  SYSTEM
+}
+
+model Message {
+  id             String        @id @default(cuid())
+  conversationId String
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User          @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  type           MessageType   @default(TEXT)
+  content        String?
+  chartShareId   String?
+  chartShare     ChartShare?   @relation(fields: [chartShareId], references: [id], onDelete: SetNull)
+  attachmentId   String?
+  attachment     Attachment?   @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+  replyToId      String?
+  replyTo        Message?      @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]     @relation("MessageReplies")
+  editedAt       DateTime?
+  deletedAt      DateTime?
+  pinned         Boolean       @default(false)
+  clientKey      String? // idempotency key from the sender
+  createdAt      DateTime      @default(now())
+
+  reactions MessageReaction[]
+  bookmarks MessageBookmark[]
+
+  @@unique([conversationId, clientKey])
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@index([pinned])
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emoji     String
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+}
+
+model MessageBookmark {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([messageId, userId])
+  @@index([userId])
+}
+
+model Attachment {
+  id         String    @id @default(cuid())
+  uploaderId String
+  uploader   User      @relation(fields: [uploaderId], references: [id], onDelete: Cascade)
+  storageKey String    @unique
+  url        String
+  filename   String
+  mimeType   String
+  size       Int
+  kind       String // image | video | pdf | chart | file
+  width      Int?
+  height     Int?
+  createdAt  DateTime  @default(now())
+
+  messages Message[]
+
+  @@index([uploaderId])
+}
+
+model Block {
+  id        String   @id @default(cuid())
+  blockerId String
+  blocker   User     @relation("UserBlocking", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedId String
+  blocked   User     @relation("UserBlockedBy", fields: [blockedId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+}
+
+// ───────────────────────────── Community ─────────────────────────────
+
+enum PostVisibility {
+  PUBLIC
+  FOLLOWERS
+}
+
+model Post {
+  id         String         @id @default(cuid())
+  authorId   String
+  author     User           @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  content    String
+  mediaUrls  String[]
+  visibility PostVisibility @default(PUBLIC)
+  groupId    String?
+  group      Group?         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  createdAt  DateTime       @default(now())
+  editedAt   DateTime?
+  deletedAt  DateTime?
+
+  comments  Comment[]
+  reactions Reaction[]
+
+  @@index([authorId, createdAt])
+  @@index([groupId, createdAt])
+  @@index([createdAt])
+}
+
+model Comment {
+  id        String    @id @default(cuid())
+  postId    String
+  post      Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  content   String
+  parentId  String?
+  createdAt DateTime  @default(now())
+  deletedAt DateTime?
+
+  @@index([postId, createdAt])
+}
+
+enum ReactionType {
+  LIKE
+  LOVE
+  BULLISH
+  BEARISH
+}
+
+model Reaction {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      ReactionType
+  postId    String?
+  post      Post?        @relation(fields: [postId], references: [id], onDelete: Cascade)
+  commentId String?
+  createdAt DateTime     @default(now())
+
+  @@unique([userId, postId])
+  @@unique([userId, commentId])
+  @@index([postId])
+}
+
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  follower    User     @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId String
+  following   User     @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+enum GroupVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+model Group {
+  id          String          @id @default(cuid())
+  name        String
+  slug        String          @unique
+  description String?
+  avatarUrl   String?
+  visibility  GroupVisibility @default(PUBLIC)
+  ownerId     String
+  owner       User            @relation("GroupOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt   DateTime        @default(now())
+
+  members     GroupMember[]
+  posts       Post[]
+  shares      ChartShare[]
+  conversation Conversation?
+
+  @@index([visibility])
+}
+
+model GroupMember {
+  id       String     @id @default(cuid())
+  groupId  String
+  group    Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId   String
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     MemberRole @default(MEMBER)
+  joinedAt DateTime   @default(now())
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+// ───────────────────────────── Meetings ─────────────────────────────
+
+enum MeetingStatus {
+  SCHEDULED
+  LIVE
+  ENDED
+  CANCELLED
+}
+
+model Meeting {
+  id              String           @id @default(cuid())
+  hostId          String
+  host            User             @relation("MeetingHost", fields: [hostId], references: [id], onDelete: Cascade)
+  title           String
+  description     String?
+  roomName        String           @unique
+  status          MeetingStatus    @default(SCHEDULED)
+  scheduledAt     DateTime?
+  startedAt       DateTime?
+  endedAt         DateTime?
+  recordingUrl    String?
+  externalUrl     String? // optional external fallback (e.g. Google Meet)
+  visibility      ShareVisibility  @default(PRIVATE)
+  groupId         String?
+  createdAt       DateTime         @default(now())
+
+  participants MeetingParticipant[]
+  invitations  MeetingInvitation[]
+
+  @@index([hostId])
+  @@index([status, scheduledAt])
+}
+
+model MeetingParticipant {
+  id        String    @id @default(cuid())
+  meetingId String
+  meeting   Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      MemberRole @default(MEMBER)
+  joinedAt  DateTime?
+  leftAt    DateTime?
+
+  @@unique([meetingId, userId])
+  @@index([userId])
+}
+
+model MeetingInvitation {
+  id        String    @id @default(cuid())
+  meetingId String
+  meeting   Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  inviterId String
+  inviter   User      @relation("MeetingInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  inviteeId String
+  invitee   User      @relation("MeetingInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+  status    String    @default("PENDING") // PENDING | ACCEPTED | DECLINED
+  createdAt DateTime  @default(now())
+
+  @@unique([meetingId, inviteeId])
+  @@index([inviteeId])
+}
+
+// ───────────────────────────── Notifications ─────────────────────────────
+
+enum NotificationType {
+  MESSAGE
+  MENTION
+  REACTION
+  CHART_SHARE
+  MEETING_INVITE
+  FOLLOW
+  ALERT
+  SYNC_FAILURE
+  REPORT
+  SYSTEM
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String?
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, readAt])
+  @@index([createdAt])
+}
+
+model NotificationPrefs {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  inApp     Json     @default("{}")
+  email     Json     @default("{}")
+  push      Json     @default("{}")
+  updatedAt DateTime @updatedAt
+}
+
+// ───────────────────────────── Moderation & audit ─────────────────────────────
+
+enum ReportTargetType {
+  USER
+  POST
+  MESSAGE
+  COMMENT
+  GROUP
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  DISMISSED
+  ACTIONED
+}
+
+model Report {
+  id          String           @id @default(cuid())
+  reporterId  String
+  reporter    User             @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetType  ReportTargetType
+  targetId    String
+  reason      String
+  status      ReportStatus     @default(PENDING)
+  resolvedById String?
+  resolvedBy  User?            @relation("ReportResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt  DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@index([status, createdAt])
+  @@index([targetType, targetId])
+}
+
+model ModerationAction {
+  id           String   @id @default(cuid())
+  moderatorId  String
+  moderator    User     @relation(fields: [moderatorId], references: [id], onDelete: Cascade)
+  action       String // WARN | BAN | UNBAN | DELETE_CONTENT | VERIFY_TRADER
+  targetUserId String?
+  details      Json?
+  createdAt    DateTime @default(now())
+
+  @@index([targetUserId])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action    String // LOGIN | ROLE_CHANGE | MT5_CONNECT | MT5_DISCONNECT | ADMIN_ACTION | DATA_EXPORT | ACCOUNT_DELETE ...
+  entity    String?
+  entityId  String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+}

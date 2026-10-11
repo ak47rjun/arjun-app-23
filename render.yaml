@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────
+# Render blueprint — ARJUN full custom server (Next + Socket.IO + jobs)
+# Deploy: connect the repo in the Render dashboard (uses this file),
+#         or: render blueprint launch
+# Region: sin = Singapore (closest Render region to India)
+# ─────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: arjun
+    runtime: node
+    plan: starter
+    region: sin
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Secrets below are marked sync:false — fill them in the dashboard.
+      # DATABASE_URL must point at Supabase (pooled, port 6543).
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: APP_URL
+        sync: false

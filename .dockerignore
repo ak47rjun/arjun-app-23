@@ -1,0 +1,15 @@
+node_modules
+.next
+.env
+.env.local
+.git
+git
+uploads/*
+!uploads/.gitkeep
+*.log
+npm-debug.log*
+.vercel
+.arena
+coverage
+dist
+tsconfig.tsbuildinfo
