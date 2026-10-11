@@ -1,24 +1,14 @@
 /** Notification service: persists in-app notifications and pushes them over Socket.IO. */
 import { prisma } from '../prisma';
+import { emitToUserNow } from '../realtime/server';
 import type { NotificationType, Prisma } from '@prisma/client';
 
-// The Socket.IO server instance is registered by src/server/realtime.ts at boot.
-// NOTE: the custom server (server.ts, via tsx) and the Next.js route handlers
-// (compiled .next chunks) load SEPARATE module instances of this file in the
-// same process — so the emitter is also mirrored on globalThis to be visible
-// from both module graphs.
-type EmitFn = (room: string, event: string, payload: unknown) => void;
-const EMITTER_GLOBAL = '__ARJUN_NOTIFICATION_EMITTER__';
-let emitFn: EmitFn | null = null;
-
-export function registerNotificationEmitter(fn: EmitFn): void {
-  emitFn = fn;
-  (globalThis as Record<string, unknown>)[EMITTER_GLOBAL] = fn;
-}
-
-function getEmitFn(): EmitFn | null {
-  return emitFn ?? ((globalThis as Record<string, unknown>)[EMITTER_GLOBAL] as EmitFn | undefined) ?? null;
-}
+/**
+ * Pushes go through the realtime fan-out in src/lib/realtime/server.ts, which
+ * picks Socket.IO (Node host) or Supabase Realtime (serverless) automatically.
+ * Previously this module held a direct Socket.IO emitter, which silently did
+ * nothing once the app ran somewhere without a WebSocket server.
+ */
 
 export interface CreateNotificationInput {
   userId: string;
@@ -56,10 +46,7 @@ export async function createNotification(input: CreateNotificationInput) {
       data: (input.data ?? undefined) as Prisma.InputJsonValue | undefined,
     },
   });
-  const emitter = getEmitFn();
-  if (emitter) {
-    emitter(`user:${input.userId}`, 'notification:new', notification);
-  }
+  emitToUserNow(input.userId, 'notification:new', notification);
   return notification;
 }
 

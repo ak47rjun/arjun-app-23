@@ -50,6 +50,31 @@ const envSchema = z.object({
   LIVEKIT_API_KEY: z.string().default(''),
   LIVEKIT_API_SECRET: z.string().default(''),
 
+  /**
+   * Which transport pushes realtime events (messenger, presence, notifications).
+   *
+   *  auto      – Socket.IO when the custom Node server is running, else Supabase
+   *              when configured, else `none`. This is the safe default: the app
+   *              always boots, it just degrades.
+   *  socketio  – force the in-process Socket.IO server (Node host only).
+   *  supabase  – force Supabase Realtime broadcast (works on serverless/Vercel).
+   *  none      – no push at all; clients fall back to refetching.
+   */
+  REALTIME_PROVIDER: z.enum(['auto', 'socketio', 'supabase', 'none']).default('auto'),
+  /** Browser-side hint for the same choice; read via src/lib/env-config.ts. */
+  NEXT_PUBLIC_REALTIME_PROVIDER: z.enum(['auto', 'socketio', 'supabase', 'none']).default('auto'),
+
+  /**
+   * Supabase Realtime. NEXT_PUBLIC_* are safe to expose to the browser (the anon
+   * key is protected by row-level security); the service role key is server-only.
+   */
+  NEXT_PUBLIC_SUPABASE_URL: z.string().default(''),
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().default(''),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().default(''),
+
+  /** Shared secret that authorises the scheduled-jobs endpoint (Vercel Cron). */
+  CRON_SECRET: z.string().default(''),
+
   ADMIN_EMAIL: z.string().default('admin@arjun.local'),
   ADMIN_PASSWORD: z.string().default(''),
 });
@@ -79,6 +104,17 @@ export const smtpConfigured = Boolean(env.SMTP_HOST);
 export const mt5BridgeConfigured = Boolean(env.MT5_BRIDGE_URL);
 export const livekitConfigured = Boolean(env.LIVEKIT_URL && env.LIVEKIT_API_KEY && env.LIVEKIT_API_SECRET);
 export const s3Configured = Boolean(env.S3_BUCKET && env.S3_ACCESS_KEY_ID && env.S3_SECRET_ACCESS_KEY);
+
+/** True when Supabase Realtime broadcast can be used (needs URL + service key). */
+export const supabaseRealtimeConfigured = Boolean(
+  env.NEXT_PUBLIC_SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY,
+);
+
+/** Client-safe snapshot of the Supabase public config (anon key + URL only). */
+export const supabasePublicConfig = {
+  url: env.NEXT_PUBLIC_SUPABASE_URL,
+  anonKey: env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+};
 
 /** Absolute URL on this origin — used for OAuth redirects and links. */
 export function appUrl(path = '/'): string {

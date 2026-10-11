@@ -5,5 +5,11 @@
   "regions": ["bom1"],
   "env": {
     "NODE_ENV": "production"
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/jobs/run",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

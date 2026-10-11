@@ -5,9 +5,8 @@
 import './src/lib/env-bootstrap'; // must be first: loads .env before env.ts validates
 import { createServer } from 'http';
 import next from 'next';
-import { attachRealtime, emitToUser } from './src/server/realtime';
+import { attachRealtime } from './src/server/realtime';
 import { startJobRunner } from './src/server/jobs';
-import { registerNotificationEmitter } from './src/lib/notifications/service';
 import { env } from './src/lib/env';
 
 const dev = env.NODE_ENV !== 'production';
@@ -19,11 +18,9 @@ app.prepare().then(() => {
     void handle(req, res);
   });
 
-  const io = attachRealtime(server);
-  registerNotificationEmitter((room, event, payload) => {
-    if (room.startsWith('user:')) emitToUser(room.slice(5), event, payload);
-    else io.to(room).emit(event, payload);
-  });
+  // Attaching also registers this Socket.IO instance with the shared realtime
+  // fan-out (src/lib/realtime/server.ts), so route handlers push through it.
+  attachRealtime(server);
 
   startJobRunner();
 

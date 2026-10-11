@@ -12,6 +12,7 @@ import { redisSAdd, redisSRem, redisSMembers, redisSet, redisExpire } from '../l
 import { isTrustedOrigin } from '../lib/security/origins';
 import * as messenger from '../lib/messenger/service';
 import { createNotifications } from '../lib/notifications/service';
+import { registerSocketIO, emitToUser as fanoutToUser, emitToConversation as fanoutToConversation } from '../lib/realtime/server';
 import { env } from '../lib/env';
 
 const PRESENCE_KEY = 'arjun:presence';
@@ -20,21 +21,25 @@ const PRESENCE_KEY_TTL_SEC = 300;
 
 // NOTE: the custom server (server.ts, via tsx) and the Next.js route handlers
 // (compiled .next chunks) load SEPARATE module instances of this file in the
-// same process. The io instance created by attachRealtime() is therefore also
-// mirrored on globalThis so route handlers (a different module graph) can emit.
-const IO_GLOBAL = '__ARJUN_SOCKET_IO__';
+// same process, so the instance is handed to the shared fan-out (which mirrors
+// it on globalThis) rather than only living in this module graph.
 let io: Server | null = null;
 
 export function getIO(): Server | null {
-  return io ?? ((globalThis as Record<string, unknown>)[IO_GLOBAL] as Server | undefined) ?? null;
+  return io;
 }
 
+/**
+ * Emit helpers kept for callers, but they now route through the fan-out, which
+ * falls back to Supabase Realtime (or nothing) when this process is not the one
+ * hosting Socket.IO — e.g. on a serverless platform.
+ */
 export function emitToUser(userId: string, event: string, payload: unknown): void {
-  getIO()?.to(`user:${userId}`).emit(event, payload);
+  void fanoutToUser(userId, event, payload);
 }
 
 export function emitToConversation(conversationId: string, event: string, payload: unknown): void {
-  getIO()?.to(`conversation:${conversationId}`).emit(event, payload);
+  void fanoutToConversation(conversationId, event, payload);
 }
 
 interface AuthedSocket extends Socket {
@@ -47,7 +52,9 @@ export function attachRealtime(server: HttpServer): Server {
     cors: { origin: new URL(env.APP_URL).origin, credentials: true },
     maxHttpBufferSize: 1e6,
   });
-  (globalThis as Record<string, unknown>)[IO_GLOBAL] = io;
+  // Make this instance reachable from the route-handler module graph so the
+  // `socketio` fan-out provider can use it.
+  registerSocketIO(io);
 
   // ── authentication middleware ──
   io.use(async (socket: Socket, next) => {

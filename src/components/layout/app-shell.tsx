@@ -10,7 +10,7 @@ import { cn } from '@/lib/cn';
 import { NAV_ITEMS, MOBILE_NAV_ITEMS } from './nav';
 import { Avatar, Badge } from '@/components/ui';
 import { useSession, type SessionUser } from '@/lib/client/session';
-import { getSocket, disconnectSocket } from '@/lib/client/socket';
+import { realtime } from '@/lib/client/realtime';
 import { api, ApiClientError } from '@/lib/client/api';
 
 export function AppShell({ children, initialUser }: { children: React.ReactNode; initialUser: SessionUser }) {
@@ -22,7 +22,13 @@ export function AppShell({ children, initialUser }: { children: React.ReactNode;
 
   // realtime: unread badge + toasts
   useEffect(() => {
-    const socket = getSocket();
+    if (!initialUser?.id) return;
+    let cancelled = false;
+    const registered: Array<[string, (payload: any) => void]> = [];
+    const bind = (event: string, handler: (payload: any) => void) => {
+      realtime.on(event, handler);
+      registered.push([event, handler]);
+    };
     const onNotification = (n: { title: string; body?: string }) => {
       setUnread((u) => u + 1);
       toast(n.title, { description: n.body });
@@ -31,16 +37,22 @@ export function AppShell({ children, initialUser }: { children: React.ReactNode;
       setUnread((u) => u + 1);
       toast('New message', { description: m.content ?? m.sender?.displayName ?? undefined });
     };
-    socket.on('notification:new', onNotification);
-    socket.on('message:new', onMessage);
-    return () => {
-      socket.off('notification:new', onNotification);
-      socket.off('message:new', onMessage);
-    };
-  }, []);
 
+    void realtime.start({ userId: initialUser.id }).then(() => {
+      if (cancelled) return;
+      bind('notification:new', onNotification);
+      bind('message:new', onMessage);
+    });
+
+    return () => {
+      cancelled = true;
+      for (const [event, handler] of registered) realtime.off(event, handler);
+    };
+  }, [initialUser?.id]);
+
+  // Close the transport when the shell unmounts (e.g. after sign-out).
   useEffect(() => {
-    return () => disconnectSocket();
+    return () => realtime.close();
   }, []);
 
   const visibleNav = useMemo(
