@@ -43,7 +43,7 @@ export async function middleware(req: NextRequest) {
   const session = await hasValidSession(req);
 
   // protected app area
-  if (pathname.startsWith('/dashboard') || pathname.startsWith('/terminal') || pathname.startsWith('/watchlist') || pathname.startsWith('/journal') || pathname.startsWith('/analytics') || pathname.startsWith('/messages') || pathname.startsWith('/community') || pathname.startsWith('/charts') || pathname.startsWith('/mt5') || pathname.startsWith('/meetings') || pathname.startsWith('/notifications') || pathname.startsWith('/settings') || pathname.startsWith('/profiles')) {
+  if (pathname.startsWith('/dashboard') || pathname.startsWith('/terminal') || pathname.startsWith('/watchlist') || pathname.startsWith('/journal') || pathname.startsWith('/analytics') || pathname.startsWith('/calendar') || pathname.startsWith('/messages') || pathname.startsWith('/community') || pathname.startsWith('/charts') || pathname.startsWith('/mt5') || pathname.startsWith('/meetings') || pathname.startsWith('/notifications') || pathname.startsWith('/settings') || pathname.startsWith('/profiles')) {
     if (!session) {
       const url = req.nextUrl.clone();
       url.pathname = '/login';
