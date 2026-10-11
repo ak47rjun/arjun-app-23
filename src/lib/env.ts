@@ -54,7 +54,23 @@ const envSchema = z.object({
   ADMIN_PASSWORD: z.string().default(''),
 });
 
-export const env = envSchema.parse(process.env);
+// During `next build`, Next imports route modules to collect page data — runtime
+// secrets (DATABASE_URL, AUTH_SECRET, …) are not (and should not be) present in
+// the build environment. Validate strictly at runtime; during the build phase,
+// satisfy the schema with placeholders so page-data collection can proceed.
+// The running server always gets the real, strictly-validated environment.
+const isBuildPhase = process.env.NEXT_PHASE === 'phase-production-build';
+
+export const env = envSchema.parse(
+  isBuildPhase
+    ? {
+        ...process.env,
+        DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://build:build@localhost:5432/build',
+        AUTH_SECRET: process.env.AUTH_SECRET ?? 'build-placeholder-auth-secret-0000',
+        ENCRYPTION_KEY: process.env.ENCRYPTION_KEY ?? 'build-placeholder-encryption-key-0000000000',
+      }
+    : process.env,
+);
 
 export const isProduction = env.NODE_ENV === 'production';
 
