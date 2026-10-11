@@ -24,6 +24,29 @@ interface MeetingInfo {
   host?: { id: string; displayName: string | null } | null;
 }
 
+// livekit-client has used both string kinds and numeric enums across versions
+const isVideo = (t: any) => t?.kind === 'video' || t?.kind === 'Video' || t?.kind === 2;
+const isAudio = (t: any) => t?.kind === 'audio' || t?.kind === 'Audio' || t?.kind === 1;
+
+/** Renders a remote track into its own <video>; the ref is guaranteed non-null in the effect. */
+function RemoteVideo({ track, label }: { track: any; label: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !track) return;
+    track.attach(el);
+    return () => {
+      try { track.detach(el); } catch { /* element already gone */ }
+    };
+  }, [track]);
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-arjun-line bg-arjun-panel">
+      <video ref={ref} autoPlay playsInline className="h-full w-full object-cover" />
+      <span className="absolute bottom-2 left-2 rounded-md bg-black/70 px-2 py-0.5 text-[11px]">{label}</span>
+    </div>
+  );
+}
+
 export default function MeetingRoomPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -35,10 +58,23 @@ export default function MeetingRoomPage() {
   const [camOn, setCamOn] = useState(true);
   const [sharing, setSharing] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Media is rendered from state, not appended imperatively: imperative attach
+  // raced the refs and left the local tile blank / dropped remote tiles.
+  const [localCamTrack, setLocalCamTrack] = useState<any>(null);
+  const [remoteVideos, setRemoteVideos] = useState<Array<{ sid: string; identity: string; track: any }>>([]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const roomRef = useRef<any>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
+
+  const addRemote = useCallback((track: any, identity: string) => {
+    if (!track) return;
+    setRemoteVideos((prev) => {
+      const sid = track.sid ?? `${identity}:${prev.length}`;
+      if (prev.some((v) => v.track === track || v.sid === sid)) return prev;
+      return [...prev, { sid, identity, track }];
+    });
+  }, []);
 
   const loadMeeting = useCallback(async () => {
     try {
@@ -67,17 +103,32 @@ export default function MeetingRoomPage() {
       });
       roomRef.current = room;
 
-      room.on(RoomEvent.TrackSubscribed, (track: any, _pub: any, participant: any) => {
-        if (track.kind === Track.Kind.Video || track.kind === 'video') {
-          const el = track.attach();
-          el.className = 'h-full w-full rounded-xl object-cover';
-          containerRef.current?.appendChild(el);
-        } else if (track.kind === Track.Kind.Audio || track.kind === 'audio') {
-          track.attach().play().catch(() => {});
+      // Tracks that are already published when we arrive (we join a room late)
+      const addExisting = () => {
+        for (const p of room.remoteParticipants.values() as Iterable<any>) {
+          for (const pub of p.videoTrackPublications.values() as Iterable<any>) {
+            if (pub?.track) addRemote(pub.track, p.identity ?? 'Guest');
+          }
         }
+      };
+      room.on(RoomEvent.TrackSubscribed, (track: any, _pub: any, participant: any) => {
+        if (isVideo(track)) addRemote(track, participant?.identity ?? 'Guest');
+        else if (isAudio(track)) track.attach().play().catch(() => {});
       });
       room.on(RoomEvent.TrackUnsubscribed, (track: any) => {
-        track.detach().forEach((el: HTMLElement) => el.remove());
+        setRemoteVideos((prev) => prev.filter((v) => v.track !== track && v.sid !== track?.sid));
+        try { track.detach().forEach((el: HTMLElement) => el.remove()); } catch { /* ignore */ }
+      });
+      room.on(RoomEvent.ParticipantDisconnected, (participant: any) => {
+        const identity = participant?.identity;
+        setRemoteVideos((prev) => prev.filter((v) => v.identity !== identity));
+      });
+      // Our own camera, whenever LiveKit finishes publishing it
+      room.on(RoomEvent.LocalTrackPublished, (pub: any) => {
+        if (pub?.source === Track.Source.Camera && pub.track) setLocalCamTrack(pub.track);
+      });
+      room.on(RoomEvent.LocalTrackUnpublished, (pub: any) => {
+        if (pub?.source === Track.Source.Camera) setLocalCamTrack(null);
       });
       room.on(RoomEvent.Disconnected, () => {
         setJoinState('idle');
@@ -86,10 +137,11 @@ export default function MeetingRoomPage() {
       await room.connect(res.url, res.token);
       await room.localParticipant.setMicrophoneEnabled(true);
       await room.localParticipant.setCameraEnabled(true);
-      if (localVideoRef.current) {
-        const track = room.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
-        if (track) track.attach(localVideoRef.current);
-      }
+      // The camera track may land before or after setCameraEnabled resolves, and the
+      // <video> may not exist yet either — so keep it in state and attach on render.
+      const camPub = room.localParticipant.getTrackPublication(Track.Source.Camera);
+      setLocalCamTrack(camPub?.track ?? null);
+      addExisting(); // anyone already in the room when we arrived
       setJoinState('joined');
     } catch (e) {
       if (e instanceof ApiClientError && e.status === 503) {
@@ -101,7 +153,17 @@ export default function MeetingRoomPage() {
         toast.error(e instanceof ApiClientError ? e.message : 'Failed to join meeting');
       }
     }
-  }, [params.id]);
+  }, [params.id, addRemote]);
+
+  // Attach our own preview whenever the track or the <video> element appears.
+  useEffect(() => {
+    const el = localVideoRef.current;
+    if (!el || !localCamTrack) return;
+    localCamTrack.attach(el);
+    return () => {
+      try { localCamTrack.detach(el); } catch { /* element already gone */ }
+    };
+  }, [localCamTrack, joinState]);
 
   const leave = async () => {
     try {
@@ -110,6 +172,8 @@ export default function MeetingRoomPage() {
       /* ignore */
     }
     roomRef.current = null;
+    setLocalCamTrack(null);
+    setRemoteVideos([]);
     setJoinState('idle');
     await api.post(`/api/meetings/${params.id}/end`).catch(() => {});
     router.push('/meetings');
@@ -205,6 +269,14 @@ export default function MeetingRoomPage() {
               <video ref={localVideoRef} autoPlay playsInline muted className="h-full w-full object-cover" />
               <span className="absolute bottom-2 left-2 rounded-md bg-black/70 px-2 py-0.5 text-[11px]">You</span>
             </div>
+            {remoteVideos.map((v) => (
+              <RemoteVideo key={v.sid} track={v.track} label={v.identity} />
+            ))}
+            {remoteVideos.length === 0 && (
+              <div className="flex items-center justify-center rounded-xl border border-dashed border-arjun-line text-xs text-arjun-muted">
+                Waiting for others to join…
+              </div>
+            )}
           </div>
           <div className="glass flex items-center justify-center gap-3 rounded-2xl p-4">
             <Button variant={micOn ? 'secondary' : 'danger'} size="icon" onClick={toggleMic} aria-label="Toggle microphone">
