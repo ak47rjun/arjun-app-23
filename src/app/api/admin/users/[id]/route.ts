@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { audit } from '@/lib/audit';
 import { forbidden, json, notFound, parseBody, withApi } from '@/lib/api';
-import { destroyAllSessions } from '@/lib/auth/session';
+import { destroyAllSessions, invalidateSessionCaches } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic'; // API routes read cookies/headers — never prerender
 
@@ -21,6 +21,10 @@ export const PATCH = withApi(
 
     if (body.role && body.role !== target.role) {
       await prisma.user.update({ where: { id: target.id }, data: { role: body.role } });
+      // The cached SessionUser carries the role, and getSessionUser() trusts it
+      // without re-reading the user row. Without this a demoted admin keeps
+      // ADMIN in every cached session until the entry expires.
+      await invalidateSessionCaches(target.id);
       await audit(user.id, 'ROLE_CHANGE', {
         entity: 'User',
         entityId: target.id,
