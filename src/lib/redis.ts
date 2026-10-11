@@ -100,6 +100,16 @@ export async function redisSMembers(key: string): Promise<string[]> {
   }
 }
 
+export async function redisExpire(key: string, ttlSec: number): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  try {
+    await r.expire(key, ttlSec);
+  } catch {
+    /* non-fatal */
+  }
+}
+
 export async function redisPing(): Promise<boolean> {
   const r = getRedis();
   if (!r) return false;
@@ -111,9 +121,26 @@ export async function redisPing(): Promise<boolean> {
 }
 
 // ── in-memory fallback (single process) ──
+// Used when Redis is unreachable. Rate-limit keys are per-window, so a new key
+// is minted on every window rollover — without sweeping expired entries this Map
+// grew without bound and slowly leaked memory for the lifetime of the process.
 const memoryStore = new Map<string, { value: number; expiresAt: number }>();
+const MEMORY_SWEEP_EVERY = 500;
+let memoryOpsSinceSweep = 0;
+
+function sweepMemoryStore(now: number): void {
+  for (const [k, v] of memoryStore) {
+    if (v.expiresAt < now) memoryStore.delete(k);
+  }
+}
+
 function memoryIncr(key: string, ttlSec: number): number {
   const now = Date.now();
+  memoryOpsSinceSweep += 1;
+  if (memoryOpsSinceSweep >= MEMORY_SWEEP_EVERY) {
+    memoryOpsSinceSweep = 0;
+    sweepMemoryStore(now);
+  }
   const entry = memoryStore.get(key);
   if (!entry || entry.expiresAt < now) {
     memoryStore.set(key, { value: 1, expiresAt: now + ttlSec * 1000 });

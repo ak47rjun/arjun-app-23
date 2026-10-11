@@ -12,9 +12,10 @@ export const dynamic = 'force-dynamic'; // API routes read cookies/headers — n
 export async function GET(req: Request, ctx: { params: { key: string } }): Promise<Response> {
   const key = decodeURIComponent(ctx.params.key);
   const storage = getStorage();
-  const buffer = await storage.get(key);
-  if (!buffer) return new Response('Not found', { status: 404 });
 
+  // Authorize BEFORE touching the disk. Reading first meant a missing file
+  // returned 404 while a present-but-forbidden one returned 403, which turned
+  // this endpoint into an existence oracle for arbitrary storage keys.
   const attachment = await prisma.attachment.findUnique({ where: { storageKey: key } });
   const user = await getSessionUser(req);
 
@@ -64,6 +65,9 @@ export async function GET(req: Request, ctx: { params: { key: string } }): Promi
   }
 
   if (!isPublic) return new Response('Forbidden', { status: 403 });
+
+  const buffer = await storage.get(key);
+  if (!buffer) return new Response('Not found', { status: 404 });
 
   const headers: Record<string, string> = {
     'content-type': mime,

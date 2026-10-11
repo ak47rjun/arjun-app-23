@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Avatar, Badge, Button, EmptyState, Input, Label, Modal, PageHeader, Select, Skeleton } from '@/components/ui';
 import { api, ApiClientError } from '@/lib/client/api';
-import { getSocket } from '@/lib/client/socket';
+import { realtime } from '@/lib/client/realtime';
 import { useSession } from '@/lib/client/session';
 import { cn } from '@/lib/cn';
 
@@ -92,7 +92,13 @@ export function MessengerPage() {
 
   // realtime: join + live events
   useEffect(() => {
-    const socket = getSocket();
+    if (!user?.id) return;
+    let cancelled = false;
+    const registered: Array<[string, (payload: any) => void]> = [];
+    const bind = (event: string, handler: (payload: any) => void) => {
+      realtime.on(event, handler);
+      registered.push([event, handler]);
+    };
     const onNew = (message: MessageRow) => {
       setMessages((cur) => (cur.some((m) => m.id === message.id) ? cur : [...cur, message]));
       setConversations((cur) =>
@@ -144,21 +150,19 @@ export function MessengerPage() {
       if (payload.conversationId) router.push(`/messages/${payload.conversationId}`);
     };
 
-    socket.on('message:new', onNew);
-    socket.on('message:edited', onEdited);
-    socket.on('message:deleted', onDeleted);
-    socket.on('message:reaction', onReaction);
-    socket.on('message:typing', onTyping);
-    socket.on('presence:update', onPresence);
-    socket.on('conversation:added', onAdded);
+    void realtime.start({ userId: user.id }).then(() => {
+      if (cancelled) return;
+      bind('message:new', onNew);
+      bind('message:edited', onEdited);
+      bind('message:deleted', onDeleted);
+      bind('message:reaction', onReaction);
+      bind('message:typing', onTyping);
+      bind('presence:update', onPresence);
+      bind('conversation:added', onAdded);
+    });
     return () => {
-      socket.off('message:new', onNew);
-      socket.off('message:edited', onEdited);
-      socket.off('message:deleted', onDeleted);
-      socket.off('message:reaction', onReaction);
-      socket.off('message:typing', onTyping);
-      socket.off('presence:update', onPresence);
-      socket.off('conversation:added', onAdded);
+      cancelled = true;
+      for (const [event, handler] of registered) realtime.off(event, handler);
     };
   }, [loadConversations, router, user?.id]);
 
@@ -191,13 +195,12 @@ export function MessengerPage() {
   // join the socket room + watch presence of conversation peers
   useEffect(() => {
     if (!activeId) return;
-    const socket = getSocket();
-    socket.emit('conversation:join', activeId);
+    realtime.joinConversation(activeId);
     const conv = conversations.find((c) => c.id === activeId);
     const peerIds = (conv?.members ?? []).map((m) => m.id).filter((id) => id !== user?.id);
     if (peerIds.length > 0) {
-      socket.emit('presence:watch', peerIds, (res: { online: string[] }) => {
-        setOnline(new Set(res.online));
+      realtime.watchPresence(peerIds, (online: string[]) => {
+        setOnline(new Set(online));
       });
     }
   }, [activeId, conversations, user?.id]);
@@ -248,11 +251,10 @@ export function MessengerPage() {
 
   const onTyping = () => {
     if (!activeId) return;
-    const socket = getSocket();
-    socket.emit('message:typing', { conversationId: activeId, isTyping: true });
+    realtime.setTyping(activeId, true);
     if (typingTimeout.current) clearTimeout(typingTimeout.current);
     typingTimeout.current = setTimeout(() => {
-      socket.emit('message:typing', { conversationId: activeId, isTyping: false });
+      realtime.setTyping(activeId, false);
     }, 2500);
   };
 

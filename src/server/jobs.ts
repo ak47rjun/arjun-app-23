@@ -24,7 +24,7 @@ export function registerJobHandler(type: SyncJobType, handler: JobHandler): void
 registerJobHandler(SyncJobType.MT5_SYNC, runMt5SyncJob);
 registerJobHandler(SyncJobType.MT5_HISTORY, runMt5SyncJob);
 
-async function processPendingJobs(): Promise<void> {
+export async function processPendingJobs(): Promise<void> {
   const jobs = await prisma.syncJob.findMany({
     where: { status: SyncJobStatus.PENDING },
     include: { connection: true },
@@ -72,7 +72,7 @@ async function processPendingJobs(): Promise<void> {
   }
 }
 
-async function checkWatchlistAlerts(): Promise<void> {
+export async function checkWatchlistAlerts(): Promise<void> {
   const alerts = await prisma.watchlistItem.findMany({
     where: { alertEnabled: true, OR: [{ alertAbove: { not: null } }, { alertBelow: { not: null } }] },
     include: { instrument: true, watchlist: true },
@@ -106,7 +106,7 @@ async function checkWatchlistAlerts(): Promise<void> {
   }
 }
 
-async function sendMeetingReminders(): Promise<void> {
+export async function sendMeetingReminders(): Promise<void> {
   const soon = new Date(Date.now() + 15 * 60 * 1000);
   const meetings = await prisma.meeting.findMany({
     where: { status: 'SCHEDULED', scheduledAt: { gte: new Date(), lte: soon } },
@@ -114,6 +114,19 @@ async function sendMeetingReminders(): Promise<void> {
   });
   for (const meeting of meetings) {
     for (const p of meeting.participants) {
+      // This runs every 60s, so without a dedupe check each participant would
+      // get a fresh notification every minute for the entire 15-minute window.
+      // A participant is notified once per meeting until that notification is
+      // consumed: we look for an existing MEETING_INVITE carrying this meetingId.
+      const alreadyNotified = await prisma.notification.findFirst({
+        where: {
+          userId: p.userId,
+          type: 'MEETING_INVITE',
+          data: { path: ['meetingId'], equals: meeting.id },
+        },
+        select: { id: true },
+      });
+      if (alreadyNotified) continue;
       await createNotification({
         userId: p.userId,
         type: 'MEETING_INVITE',
@@ -123,6 +136,17 @@ async function sendMeetingReminders(): Promise<void> {
       });
     }
   }
+}
+
+/**
+ * Run every job once. Used by the in-process scheduler below and by the
+ * scheduled-jobs HTTP endpoint (Vercel Cron), which is how these run on a
+ * serverless platform where there is no process to hold a setInterval.
+ */
+export async function runAllJobsOnce(): Promise<void> {
+  await processPendingJobs();
+  await checkWatchlistAlerts();
+  await sendMeetingReminders();
 }
 
 let running = false;

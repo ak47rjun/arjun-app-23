@@ -123,14 +123,27 @@ export function computeStats(trades: ClosedTradeInput[]): JournalStats {
   let equity = 0;
   let peak = 0;
   let maxDd = 0;
+  let maxDdPercent = 0;
   const equityCurve: EquityPoint[] = [];
   for (const t of closed) {
     equity += t.netPnl;
     peak = Math.max(peak, equity);
-    maxDd = Math.max(maxDd, peak - equity);
+    const dd = peak - equity;
+    maxDd = Math.max(maxDd, dd);
+    // Measure each drawdown against the peak AS IT STOOD at that moment. Using
+    // the peak at the end of the curve instead lets a later new high silently
+    // shrink an earlier, much deeper drawdown (a 90-unit drop off a peak of 100
+    // was being reported as 9% because the peak later reached 1000).
+    if (dd > 0) {
+      // peak === 0 means equity never rose above the starting line, so there is
+      // no positive peak to divide by. Report a full drawdown rather than a
+      // misleading 0% — the account is at its worst point, not flat.
+      const pct = peak > 0 ? (dd / peak) * 100 : 100;
+      maxDdPercent = Math.max(maxDdPercent, pct);
+    }
     equityCurve.push({ time: t.exitTime.getTime(), equity: round2(equity), tradePnl: round2(t.netPnl) });
   }
-  const maxDrawdownPercent = peak > 0 ? (maxDd / peak) * 100 : 0;
+  const maxDrawdownPercent = maxDdPercent;
 
   // streaks
   let longestWinStreak = 0;
@@ -183,7 +196,10 @@ export function computeStats(trades: ClosedTradeInput[]): JournalStats {
     winRate: closed.length ? wins.length / closed.length : 0,
     grossProfit: round2(grossProfit),
     grossLoss: round2(grossLoss),
-    profitFactor: grossLoss > 0 ? round2(grossProfit / grossLoss) : wins.length > 0 ? null : null,
+    // No losses means profit factor is undefined (division by zero). The old
+    // expression had two branches that both returned null, which read as if one
+    // of them was meant to do something else — collapse it to the real intent.
+    profitFactor: grossLoss > 0 ? round2(grossProfit / grossLoss) : null,
     expectancy: closed.length ? round2(netPnl / closed.length) : 0,
     avgWin: wins.length ? round2(grossProfit / wins.length) : 0,
     avgLoss: losses.length ? round2(grossLoss / losses.length) : 0,

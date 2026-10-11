@@ -107,33 +107,41 @@ place (`src/server/realtime.ts`, `src/server/jobs.ts`).
 
 ---
 
-## Option B — Vercel for the web tier (requires a realtime refactor)
+## Option B — Vercel for the web tier (realtime refactor: DONE)
 
 If you specifically need **Vercel** for the Next.js frontend + API routes:
 
 1. **Database**: Supabase Postgres (see `docs/SUPABASE.md`) — works unchanged.
 2. **Vercel project**: `vercel.json` is included; set all env vars in the
    Vercel dashboard (never commit `.env`). Build command `npm run build`.
-3. **Realtime**: Vercel cannot host Socket.IO. Replace the transport in
-   `src/server/realtime.ts` with a serverless-compatible provider:
-   - **Supabase Realtime** (channels + presence), or
-   - **Pusher / Ably** (managed WebSocket APIs).
-   The event surface to preserve: `message:new`, `message:edited`,
-   `message:deleted`, `message:reaction`, `message:typing`, `message:read`,
-   `presence:update`, `notification:new`. All authorization logic stays
-   server-side in the REST routes — only the push channel changes.
-4. **Background jobs**: replace the in-process runner with:
-   - **Vercel Cron** hitting a secured `/api/jobs/run` route (simple), or
-   - a tiny worker dyno/service that runs `startJobRunner()`, or
-   - **Supabase Edge Functions + pg_cron**.
+3. **Realtime** — already handled. The transport is pluggable
+   (`src/lib/realtime/server.ts`, `src/lib/client/realtime.ts`) and picks a
+   provider automatically:
+   - `socketio` — in-process Socket.IO (Node host)
+   - `supabase` — Supabase Realtime broadcast (works on Vercel)
+   - `none`     — no push; clients refetch instead
+
+   Set `REALTIME_PROVIDER=supabase` **and**
+   `NEXT_PUBLIC_REALTIME_PROVIDER=supabase` on Vercel, plus:
+   `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+   `SUPABASE_SERVICE_ROLE_KEY`. (Left on `auto` it also works — the browser
+   probes `/api/socket`, gets an HTML 404 on Vercel, and falls back to
+   Supabase on its own. Setting it explicitly just skips the probe.)
+4. **Background jobs** — use `/api/jobs/run`, scheduled by the `crons` entry in
+   `vercel.json`. It is protected by `CRON_SECRET`, which Vercel Cron sends as
+   `Authorization: Bearer <secret>`. Without a secret the route returns 503
+   rather than exposing a public trigger.
+   **Hobby plans cap cron jobs at once per day** — `vercel.json` ships a daily
+   schedule so it always deploys. For timely meeting reminders (15 minutes
+   before) and price alerts, upgrade to Pro and change the schedule to
+   `*/5 * * * *`.
 5. **Uploads**: set `STORAGE_PROVIDER=s3` (Supabase Storage or any S3-compatible
    bucket). Local disk does not persist on Vercel.
 
-This refactor is intentionally **not** done in the codebase yet — the current
-architecture is optimized for a single coherent server. Say the word and I'll
-implement the provider abstraction (`RealtimeProvider` interface with
-`SocketIOProvider` + `PusherProvider`/`SupabaseProvider`) so the same codebase
-deploys to both.
+The same codebase therefore deploys to both: a Node host keeps the custom
+server and Socket.IO, Vercel uses Supabase Realtime plus a cron-driven job
+runner, and neither loses authorization logic — that stays server-side in the
+REST routes either way.
 
 ---
 

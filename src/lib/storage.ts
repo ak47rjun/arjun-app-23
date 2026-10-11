@@ -20,26 +20,47 @@ export interface StorageProvider {
   delete(key: string): Promise<void>;
 }
 
-const UPLOAD_DIR = path.join(process.cwd(), 'uploads');
+const UPLOAD_DIR = path.resolve(process.cwd(), 'uploads');
+
+/**
+ * Resolve a storage key to an absolute path, refusing anything that escapes
+ * UPLOAD_DIR.
+ *
+ * Keys are generated server-side today, but /api/files/<key> hands a
+ * URL-decoded, user-controlled key straight to the storage layer, and
+ * `path.join(UPLOAD_DIR, '../../.env')` happily resolves outside the uploads
+ * directory. The route's authorization check currently masks that, but the
+ * storage layer must not rely on its callers for containment.
+ */
+function resolveLocalPath(key: string): string | null {
+  const full = path.resolve(UPLOAD_DIR, key);
+  if (full !== UPLOAD_DIR && !full.startsWith(UPLOAD_DIR + path.sep)) return null;
+  return full;
+}
 
 const localProvider: StorageProvider = {
   name: 'local',
   async put(key, buffer) {
-    const full = path.join(UPLOAD_DIR, key);
+    const full = resolveLocalPath(key);
+    if (!full) throw new Error('Invalid storage key: escapes the upload directory');
     await fs.mkdir(path.dirname(full), { recursive: true });
     await fs.writeFile(full, buffer);
     return { key, url: `/api/files/${encodeURIComponent(key)}` };
   },
   async get(key) {
+    const full = resolveLocalPath(key);
+    if (!full) return null;
     try {
-      return await fs.readFile(path.join(UPLOAD_DIR, key));
+      return await fs.readFile(full);
     } catch {
       return null;
     }
   },
   async delete(key) {
+    const full = resolveLocalPath(key);
+    if (!full) return;
     try {
-      await fs.unlink(path.join(UPLOAD_DIR, key));
+      await fs.unlink(full);
     } catch {
       /* ignore */
     }

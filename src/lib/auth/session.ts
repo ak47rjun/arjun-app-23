@@ -101,7 +101,23 @@ export async function destroySession(req: Request): Promise<void> {
   }
 }
 
+/**
+ * Drop the cached SessionUser for every one of a user's sessions.
+ *
+ * getSessionUser() returns straight from that cache WITHOUT re-checking the
+ * session row, so any cached entry outlives the revocation it belongs to.
+ */
+export async function invalidateSessionCaches(userId: string): Promise<void> {
+  const sessions = await prisma.session.findMany({ where: { userId }, select: { id: true } });
+  await Promise.all(sessions.map((s) => redisDel(cacheKey(s.id))));
+}
+
 export async function destroyAllSessions(userId: string): Promise<void> {
+  // Collect the ids BEFORE deleting: every cached SessionUser has to go too,
+  // otherwise the revoked session keeps authenticating (from cache) until the
+  // entry expires — which is the whole point of "sign out everywhere" after a
+  // password reset, a ban, or an account deletion.
+  await invalidateSessionCaches(userId);
   await prisma.session.deleteMany({ where: { userId } });
 }
 

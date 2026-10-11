@@ -36,10 +36,6 @@ async function hasValidSession(req: NextRequest): Promise<{ role: string } | nul
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  const isPublic =
-    pathname === '/' ||
-    PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
-
   const session = await hasValidSession(req);
 
   // protected app area
@@ -78,8 +74,11 @@ export async function middleware(req: NextRequest) {
     }
   }
 
-  // auth pages redirect to dashboard when already signed in
-  if (!isPublic && session && ['/login', '/register'].includes(pathname)) {
+  // auth pages redirect to dashboard when already signed in.
+  // NOTE: do not gate this on `isPublic` — /login and /register are always in
+  // PUBLIC_PREFIXES, so `!isPublic` was never true and a signed-in user hitting
+  // /login was never redirected. The explicit path check is what narrows this.
+  if (session && ['/login', '/register'].includes(pathname)) {
     const url = req.nextUrl.clone();
     url.pathname = '/dashboard';
     return NextResponse.redirect(url);

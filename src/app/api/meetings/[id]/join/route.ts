@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import { forbidden, json, notFound, withApi } from '@/lib/api';
-import { issueMeetingToken, meetConfigured } from '@/lib/meet/livekit';
+import { issueMeetingToken, meetConfigured, missingMeetConfig } from '@/lib/meet/livekit';
 
 export const dynamic = 'force-dynamic'; // API routes read cookies/headers — never prerender
 
@@ -36,8 +36,7 @@ export const POST = withApi(async (_req, ctx, user) => {
     return json(
       {
         error: 'SETUP_REQUIRED',
-        message:
-          'ARJUN Meet is not configured. Set LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (see docs/MEETINGS.md). The host may provide an external meeting link as a fallback.',
+        message: `ARJUN Meet is not fully configured — still missing ${missingMeetConfig().join(', ')}. Set LIVEKIT_URL, LIVEKIT_API_KEY and LIVEKIT_API_SECRET (see docs/MEETINGS.md). The host may provide an external meeting link as a fallback.`,
         externalUrl: meeting.externalUrl,
       },
       503,

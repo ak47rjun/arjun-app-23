@@ -8,31 +8,38 @@ import { Server, type Socket } from 'socket.io';
 import { getCookie, SESSION_COOKIE } from '../lib/auth/cookies';
 import { verifySessionToken } from '../lib/auth/jwt';
 import { prisma } from '../lib/prisma';
-import { redisSAdd, redisSRem, redisSMembers, redisSet, redisGet } from '../lib/redis';
+import { redisSAdd, redisSRem, redisSMembers, redisSet, redisExpire } from '../lib/redis';
 import { isTrustedOrigin } from '../lib/security/origins';
 import * as messenger from '../lib/messenger/service';
 import { createNotifications } from '../lib/notifications/service';
+import { registerSocketIO, emitToUser as fanoutToUser, emitToConversation as fanoutToConversation } from '../lib/realtime/server';
 import { env } from '../lib/env';
 
 const PRESENCE_KEY = 'arjun:presence';
+// Refreshed on every connect; lapses if no process is alive to renew it.
+const PRESENCE_KEY_TTL_SEC = 300;
 
 // NOTE: the custom server (server.ts, via tsx) and the Next.js route handlers
 // (compiled .next chunks) load SEPARATE module instances of this file in the
-// same process. The io instance created by attachRealtime() is therefore also
-// mirrored on globalThis so route handlers (a different module graph) can emit.
-const IO_GLOBAL = '__ARJUN_SOCKET_IO__';
+// same process, so the instance is handed to the shared fan-out (which mirrors
+// it on globalThis) rather than only living in this module graph.
 let io: Server | null = null;
 
 export function getIO(): Server | null {
-  return io ?? ((globalThis as Record<string, unknown>)[IO_GLOBAL] as Server | undefined) ?? null;
+  return io;
 }
 
+/**
+ * Emit helpers kept for callers, but they now route through the fan-out, which
+ * falls back to Supabase Realtime (or nothing) when this process is not the one
+ * hosting Socket.IO — e.g. on a serverless platform.
+ */
 export function emitToUser(userId: string, event: string, payload: unknown): void {
-  getIO()?.to(`user:${userId}`).emit(event, payload);
+  void fanoutToUser(userId, event, payload);
 }
 
 export function emitToConversation(conversationId: string, event: string, payload: unknown): void {
-  getIO()?.to(`conversation:${conversationId}`).emit(event, payload);
+  void fanoutToConversation(conversationId, event, payload);
 }
 
 interface AuthedSocket extends Socket {
@@ -45,7 +52,9 @@ export function attachRealtime(server: HttpServer): Server {
     cors: { origin: new URL(env.APP_URL).origin, credentials: true },
     maxHttpBufferSize: 1e6,
   });
-  (globalThis as Record<string, unknown>)[IO_GLOBAL] = io;
+  // Make this instance reachable from the route-handler module graph so the
+  // `socketio` fan-out provider can use it.
+  registerSocketIO(io);
 
   // ── authentication middleware ──
   io.use(async (socket: Socket, next) => {
@@ -90,9 +99,21 @@ export function attachRealtime(server: HttpServer): Server {
       });
       for (const m of memberships) socket.join(`conversation:${m.conversationId}`);
       await redisSAdd(PRESENCE_KEY, uid);
+      // Safety net: presence is a plain Redis set with no per-member TTL. If the
+      // process is killed (deploy, crash) the disconnect handler never runs and
+      // every user would be stranded "online" forever. Refreshing an expiry on
+      // the whole key lets it lapse once nothing is alive to renew it.
+      await redisExpire(PRESENCE_KEY, PRESENCE_KEY_TTL_SEC);
       await redisSet(`presence:seen:${uid}`, String(Date.now()), 120);
     };
     void joinRooms();
+
+    // Keep `presence:seen` an actual last-seen value rather than "connected at".
+    // Without this the timestamp was written once at connect and went stale for
+    // the whole session.
+    const heartbeat = setInterval(() => {
+      void redisSet(`presence:seen:${authed.data.user.id}`, String(Date.now()), 120);
+    }, 60_000);
 
     // broadcast presence to conversation peers
     const broadcastPresence = async (online: boolean) => {
@@ -202,14 +223,22 @@ export function attachRealtime(server: HttpServer): Server {
     });
 
     socket.on('disconnect', () => {
+      clearInterval(heartbeat);
       void (async () => {
         const uid = authed.data.user.id;
-        const lastSeen = await redisGet(`presence:seen:${uid}`);
-        // only mark offline if no other connection refreshed presence recently
-        if (lastSeen && Date.now() - Number(lastSeen) > 30000) {
-          await redisSRem(PRESENCE_KEY, uid);
-          void broadcastPresence(false);
-        }
+        // Go offline only when the user's LAST socket is gone.
+        //
+        // The old check compared `presence:seen` (written once at connect) with
+        // "now" and required a 30s gap. A user who connected and disconnected
+        // within 30s never satisfied it, so they were never removed from the
+        // presence set — and since that set had no expiry either, they showed
+        // as online indefinitely. Ask Socket.IO whether any socket remains
+        // instead: on disconnect this socket has already left its rooms, so an
+        // empty result means the user really is gone.
+        const remaining = await (getIO()?.in(`user:${uid}`).fetchSockets() ?? Promise.resolve([]));
+        if (remaining.length > 0) return;
+        await redisSRem(PRESENCE_KEY, uid);
+        void broadcastPresence(false);
       })();
     });
   });
